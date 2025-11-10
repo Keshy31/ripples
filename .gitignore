@@ -1,0 +1,24 @@
+# Build directory
+/build/
+
+# Visual Studio files
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# User-specific files
+*.user
+*.suo
+
+# Executables and libraries
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+
+# Other
+*.log
+*.tmp
