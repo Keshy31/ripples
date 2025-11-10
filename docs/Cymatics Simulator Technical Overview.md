@@ -4,9 +4,9 @@
 
 This technical overview complements the project overview document, providing in-depth details tailored for the engineering team. It focuses on the mathematical equations, numerical methods, GPU-accelerated simulations using CUDA, and shader-based rendering with OpenGL. The goal is to equip engineers with the precise formulations and code structures needed for implementation, optimization, and extension of the cymatics simulator.
 
-The simulator models vibrational patterns in 2D mediums (e.g., plates or fluids) excited by harmonic sources, rendering them in real-time on an NVIDIA RTX 4080 GPU. Key emphases include accuracy in wave propagation, efficient computation via device arrays, and visually impressive effects through custom GLSL shaders. All components are Zig-based for high performance and minimal overhead, with CUDA integration for GPU acceleration.
+The simulator models vibrational patterns in 2D mediums (e.g., plates or fluids) excited by harmonic sources, rendering them in real-time on an NVIDIA RTX 4080 GPU. Key emphases include accuracy in wave propagation, efficient computation via device arrays, and visually impressive effects through custom GLSL shaders. All components are C++-based for high performance and minimal overhead, with CUDA integration for GPU acceleration.
 
-Assumptions: The system runs on Zig 0.12+ with NVIDIA CUDA Toolkit, GLFW 3.4+, and GLAD (OpenGL 4.6 loader). Grid resolutions start at 1024x1024 for balance between fidelity and FPS (target: 60+).
+Assumptions: The system runs on C++17+ with NVIDIA CUDA Toolkit, GLFW 3.4+, and GLAD (OpenGL 4.6 loader). Grid resolutions start at 1024x1024 for balance between fidelity and FPS (target: 60+).
 
 (Word count so far: ~150)
 
@@ -97,34 +97,37 @@ Damping: Add \(-\gamma \frac{\partial u}{\partial t}\) to prevent energy buildup
 
 (Word count so far: ~650)
 
-## Simulation Methods in Zig
+## Simulation Methods in C++
 
-Zig handles the simulation backend, using GPU device pointers for parallel computation via CUDA. This section details array operations and code structures.
+C++ handles the simulation backend, using GPU device pointers for parallel computation via CUDA. This section details array operations and code structures.
 
 ### Grid Setup and Initialization
-Use 2D slices on host, with CUDA allocations for device:
+Use 2D arrays on host, with CUDA allocations for device:
 
-```zig
-const std = @import("std");
-const cuda = @cImport(@cInclude("cuda_runtime.h"));
+```cpp
+#include <cuda_runtime.h>
+#include <cmath>
+#include <iostream>
 
-const grid_size: usize = 1024;
-const dx: f32 = 1.0 / @as(f32, @floatFromInt(grid_size - 1)); // Normalized domain [0,1]
-const c: f32 = 0.1; // Wave speed
-const dt: f32 = dx / (c * 1.5); // CFL <1 for stability
-const damping: f32 = 0.01;
+const size_t grid_size = 1024;
+const float dx = 1.0f / static_cast<float>(grid_size - 1); // Normalized domain [0,1]
+const float c = 0.1f; // Wave speed
+const float dt = dx / (c * 1.5f); // CFL <1 for stability
+const float damping = 0.01f;
 
-var device_prev_u: ?*f32 = null;
-_ = cuda.cudaMalloc(@as(*?*anyopaque, @ptrCast(&device_prev_u)), grid_size * grid_size * @sizeOf(f32));
-var device_u: ?*f32 = null;
-_ = cuda.cudaMalloc(@as(*?*anyopaque, @ptrCast(&device_u)), grid_size * grid_size * @sizeOf(f32));
+float* device_prev_u = nullptr;
+cudaMalloc(reinterpret_cast<void**>(&device_prev_u), grid_size * grid_size * sizeof(float));
+float* device_u = nullptr;
+cudaMalloc(reinterpret_cast<void**>(&device_u), grid_size * grid_size * sizeof(float));
 // Initialize to zeros with cudaMemset
+cudaMemset(device_prev_u, 0, grid_size * grid_size * sizeof(float));
+cudaMemset(device_u, 0, grid_size * grid_size * sizeof(float));
 ```
 
 ### Time-Stepping Loop
 Implement Verlet integration for the wave equation using CUDA kernels:
 
-```zig
+```cpp
 // In kernels.cu (compiled separately)
 __global__ void compute_laplacian(float* u, float* lap, int size, float dx) {
     int i = blockIdx.y * blockDim.y + threadIdx.y;
@@ -144,12 +147,12 @@ __global__ void update_step(float* prev_u, float* u, float* next_u, float* lap, 
 }
 ```
 
-In Zig, launch kernels:
+In C++, launch kernels:
 
-```zig
-fn simulate_step(device_prev_u: *f32, device_u: *f32, device_next_u: *f32, device_lap: *f32, freq: f32, amp: f32, t: f32) !void {
-    const block_dim = dim3{ .x = 16, .y = 16, .z = 1 };
-    const grid_dim = dim3{ .x = (grid_size + 15) / 16, .y = (grid_size + 15) / 16, .z = 1 };
+```cpp
+void simulate_step(float* device_prev_u, float* device_u, float* device_next_u, float* device_lap, float freq, float amp, float t) {
+    dim3 block_dim(16, 16, 1);
+    dim3 grid_dim((grid_size + 15) / 16, (grid_size + 15) / 16, 1);
     compute_laplacian<<<grid_dim, block_dim>>>(device_u, device_lap, grid_size, dx);
     update_step<<<grid_dim, block_dim>>>(device_prev_u, device_u, device_next_u, device_lap, c, dt, damping, freq, amp, t, grid_size / 2, grid_size / 2, grid_size);
     // Swap pointers
@@ -159,9 +162,9 @@ fn simulate_step(device_prev_u: *f32, device_u: *f32, device_next_u: *f32, devic
 
 For modes: Precompute and sum harmonics:
 
-```zig
-fn chladni_mode(n: u32, m: u32, x: f32, y: f32) f32 {
-    return @sin(@as(f32, @floatFromInt(n)) * std.math.pi * x) * @sin(@as(f32, @floatFromInt(m)) * std.math.pi * y);
+```cpp
+float chladni_mode(unsigned int n, unsigned int m, float x, float y) {
+    return sin(static_cast<float>(n) * M_PI * x) * sin(static_cast<float>(m) * M_PI * y);
 }
 ```
 
@@ -170,7 +173,7 @@ Switch modes via user input.
 ### Fluid-Specific Extensions
 For Faraday waves, add higher-order Laplacians (bi-Laplacian) via nested kernel calls, and parametric driving: Multiply vertical accel in forcing term.
 
-Optimization: Use comptime for constants, or custom PTX if bottlenecks arise. Memory: 1024x1024 float32 array ~4MB; multiple buffers fit in 16GB.
+Optimization: Use constexpr for constants, or custom PTX if bottlenecks arise. Memory: 1024x1024 float32 array ~4MB; multiple buffers fit in 16GB.
 
 (Word count so far: ~950)
 
@@ -181,45 +184,51 @@ OpenGL provides shader-based rendering via GLAD and GLFW. Focus on transferring 
 ### Setup and Data Transfer
 In main loop:
 
-```zig
-const glfw = @cImport(@cInclude("GLFW/glfw3.h"));
-const glad = @cImport(@cInclude("glad/glad.h"));
+```cpp
+#include <GLFW/glfw3.h>
+#include <glad/glad.h>
 
-const window = glfw.glfwCreateWindow(1920, 1080, "Cymatics Simulator", null, null) orelse return error.WindowCreationFailed;
+GLFWwindow* window = glfwCreateWindow(1920, 1080, "Cymatics Simulator", nullptr, nullptr);
+if (!window) {
+    // Handle error
+}
 // Make context, load GLAD...
+if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
+    // Handle error
+}
 
 // Quad VBO/VAO
-const vertices = [_]f32{ -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0 };
-var vbo: glad.GLuint = 0;
-glad.glGenBuffers(1, &vbo);
-glad.glBindBuffer(glad.GL_ARRAY_BUFFER, vbo);
-glad.glBufferData(glad.GL_ARRAY_BUFFER, vertices.len * @sizeOf(f32), &vertices, glad.GL_STATIC_DRAW);
+float vertices[] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f };
+GLuint vbo = 0;
+glGenBuffers(1, &vbo);
+glBindBuffer(GL_ARRAY_BUFFER, vbo);
+glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
 // Texture
-var tex: glad.GLuint = 0;
-glad.glGenTextures(1, &tex);
-glad.glBindTexture(glad.GL_TEXTURE_2D, tex);
-glad.glTexImage2D(glad.GL_TEXTURE_2D, 0, glad.GL_R32F, grid_size, grid_size, 0, glad.GL_RED, glad.GL_FLOAT, null);
+GLuint tex = 0;
+glGenTextures(1, &tex);
+glBindTexture(GL_TEXTURE_2D, tex);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, grid_size, grid_size, 0, GL_RED, GL_FLOAT, nullptr);
 ```
 
 Update texture:
 
-```zig
-while (glfw.glfwWindowShouldClose(window) == 0) {
+```cpp
+while (!glfwWindowShouldClose(window)) {
     // Simulate step...
     // For zero-copy: Use CUDA-GL interop
-    var pbo: glad.GLuint = 0;
-    glad.glGenBuffers(1, &pbo);
-    glad.glBindBuffer(glad.GL_PIXEL_UNPACK_BUFFER, pbo);
+    GLuint pbo = 0;
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
     // Register with CUDA: cudaGraphicsGLRegisterBuffer
     // Map and copy from device_u
-    glad.glBindTexture(glad.GL_TEXTURE_2D, tex);
-    glad.glTexSubImage2D(glad.GL_TEXTURE_2D, 0, 0, 0, grid_size, grid_size, glad.GL_RED, glad.GL_FLOAT, null);
-    glad.glClear(glad.GL_COLOR_BUFFER_BIT);
-    glad.glBindTexture(glad.GL_TEXTURE_2D, tex);
-    glad.glDrawArrays(glad.GL_TRIANGLE_STRIP, 0, 4);
-    glfw.glfwSwapBuffers(window);
-    glfw.glfwPollEvents();
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, grid_size, grid_size, GL_RED, GL_FLOAT, nullptr);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glfwSwapBuffers(window);
+    glfwPollEvents();
 }
 ```
 
@@ -305,7 +314,7 @@ Render as points with instancing.
 
 ## Integration and Optimization
 
-- **Zig-CUDA-OpenGL Bridge**: Use CUDA-GL interop for zero-copy transfers. Profile with NVIDIA Nsight.
+- **C++-CUDA-OpenGL Bridge**: Use CUDA-GL interop for zero-copy transfers. Profile with NVIDIA Nsight.
 - **Performance Tips**: Batch updates, minimize host-device transfers (aim for <1ms/frame). For 4080: Leverage Tensor Cores via custom PTX or mixed-precision (f16).
 - **Debugging**: Validate equations with small grids; compare to analytical modes.
 - **Scalability**: Extend to 3D with voxel arrays; add ML for inverse problems (e.g., freq from pattern via external bindings if needed).
@@ -313,7 +322,7 @@ Render as points with instancing.
 ## References
 - Jenny, H. (1967). *Cymatics*.
 - Chladni, E. (1787). *Entdeckungen*.
-- Zig Documentation: ziglang.org.
+- C++ Documentation: cppreference.com.
 - CUDA Toolkit Documentation.
 - OpenGL Examples on GitHub.
 

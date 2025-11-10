@@ -4,13 +4,13 @@
 
 Cymatics, derived from the Ancient Greek *kŷma* (wave), is a subset of **modal vibrational phenomena** where sound and vibration create visible, geometric patterns in matter. Coined by Swiss physician **Hans Jenny (1904–1972)**, it typically involves vibrating a plate, diaphragm, or membrane, with particles (e.g., sand, lycopodium powder), pastes, or liquids revealing **regions of maximum and minimum displacement**—forming intricate nodal lines and harmonic structures. Patterns vary by the medium's geometry, driving frequency, and constraints.
 
-This project develops a **visually impressive software-based cymatics simulator** using a Zig-first approach with **CUDA** for GPU-accelerated simulations and **OpenGL** for shader-driven rendering via GLAD and GLFW. Optimized for an **NVIDIA RTX 4080**, it replicates classic experiments like **Chladni plates** and **Faraday waves** while enabling real-time interactivity. Inspired by historical setups (e.g., Chinese spouting bowls, cymascopes) and modern art (e.g., Nigel Stanford's 2014 video, Eurovision's 2020 medal), the simulator democratizes cymatics—allowing safe, infinite exploration without physical hazards.
+This project develops a **visually impressive software-based cymatics simulator** using a C++-first approach with **CUDA** for GPU-accelerated simulations and **OpenGL** for shader-driven rendering via GLAD and GLFW. Optimized for an **NVIDIA RTX 4080**, it replicates classic experiments like **Chladni plates** and **Faraday waves** while enabling real-time interactivity. Inspired by historical setups (e.g., Chinese spouting bowls, cymascopes) and modern art (e.g., Nigel Stanford's 2014 video, Eurovision's 2020 medal), the simulator democratizes cymatics—allowing safe, infinite exploration without physical hazards.
 
 **Key Goals**:
 - Accurate simulation of **Chladni figures**, **Faraday waves**, and organic forms.
 - High-resolution (4K+), 60+ FPS performance.
 - Intuitive controls for frequencies, amplitudes, and mediums (sand/water).
-- **Zig showcase**: Tie into systems programming trends via efficient, safe computations.
+- **C++ showcase**: Tie into systems programming trends via efficient, safe computations.
 - Open-source, extensible for education, art, and research.
 
 This refined overview integrates precise facts from authoritative sources, enhancing historical accuracy and theoretical depth. (Word count: ~350)
@@ -67,20 +67,20 @@ This progression—from empirical to digital—positions our simulator as a comp
 
 **Jenny's Insight**: Patterns echo **universal geometries** (mandalas, biology), manifesting "invisible vibrational energy fields."
 
-Our Zig solver with CUDA numerically integrates these for dynamic realism.
+Our C++ solver with CUDA numerically integrates these for dynamic realism.
 
 (Word count: ~950)
 
 ## Design Considerations
 
-- **Fidelity/Performance**: CUDA device arrays for 1024x1024+ grids; CFL-stable stepping with comptime optimizations.
+- **Fidelity/Performance**: CUDA device arrays for 1024x1024+ grids; CFL-stable stepping with compile-time optimizations.
 - **Visuals**: Shaders for refraction (water), particles (sand), bloom (glow).
 - **UX**: GLFW event handling; mic input; presets (e.g., "Om" mode).
 - **Extensibility**: Modular for micro-assembly sims (e.g., Chen 2014).
 
 ## Technical Stack and Implementation
 
-- **Zig**: Core logic and CPU fallback (manual finite differences).
+- **C++**: Core logic and CPU fallback (manual finite differences).
 - **CUDA**: GPU-accelerated wave solver (custom kernels for Laplacian).
 - **GLFW/GLAD/OpenGL**: GLSL shaders (e.g., normal-mapped refraction).
 - **Steps**:
@@ -90,7 +90,7 @@ Our Zig solver with CUDA numerically integrates these for dynamic realism.
   4. Loop: 60 FPS.
 
 **Code Snippet** (Wave Step):
-```zig
+```cpp
 next_u[i * size + j] = 2 * u[i * size + j] - prev_u[i * size + j] + (c * c) * (dt * dt) * lap[i * size + j];
 ```
 
@@ -103,4 +103,4 @@ next_u[i * size + j] = 2 * u[i * size + j] - prev_u[i * size + j] + (c * c) * (d
 
 ## Conclusion
 
-Refined with Grokipedia facts, this simulator honors cymatics' legacy—from Hooke's 1680 nodals to 2024's adaptive art—while pioneering GPU visualization in Zig. **Total words: ~1450**. Deploy, experiment, vibrate!
+Refined with Grokipedia facts, this simulator honors cymatics' legacy—from Hooke's 1680 nodals to 2024's adaptive art—while pioneering GPU visualization in C++. **Total words: ~1450**. Deploy, experiment, vibrate!
