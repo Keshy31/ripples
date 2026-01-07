@@ -245,19 +245,108 @@ int main() {
         return shader;
     };
     
-    GLuint vertexShader = loadShader("src/shaders/vertex.glsl", GL_VERTEX_SHADER);
-    GLuint fragmentShader = loadShader("src/shaders/fragment.glsl", GL_FRAGMENT_SHADER);
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vertexShader);
-    glAttachShader(program, fragmentShader);
-    glLinkProgram(program);
-    int linkSuccess;
-    char linkInfoLog[512];
-    glGetProgramiv(program, GL_LINK_STATUS, &linkSuccess);
-    if (!linkSuccess) {
-        glGetProgramInfoLog(program, 512, NULL, linkInfoLog);
-        std::cerr << "Program link error: " << linkInfoLog << std::endl;
+    // Helper to create shader program
+    auto createProgram = [&loadShader](const char* vertPath, const char* fragPath) -> GLuint {
+        GLuint vert = loadShader(vertPath, GL_VERTEX_SHADER);
+        GLuint frag = loadShader(fragPath, GL_FRAGMENT_SHADER);
+        GLuint prog = glCreateProgram();
+        glAttachShader(prog, vert);
+        glAttachShader(prog, frag);
+        glLinkProgram(prog);
+        int success;
+        char infoLog[512];
+        glGetProgramiv(prog, GL_LINK_STATUS, &success);
+        if (!success) {
+            glGetProgramInfoLog(prog, 512, NULL, infoLog);
+            std::cerr << "Program link error (" << fragPath << "): " << infoLog << std::endl;
+        }
+        return prog;
+    };
+
+    // Main scene shader
+    GLuint program = createProgram("src/shaders/vertex.glsl", "src/shaders/fragment.glsl");
+
+    // Post-processing shaders
+    GLuint brightExtractProg = createProgram("src/shaders/fullscreen.vert", "src/shaders/bright_extract.frag");
+    GLuint blurProg = createProgram("src/shaders/fullscreen.vert", "src/shaders/blur.frag");
+    GLuint ssaoProg = createProgram("src/shaders/fullscreen.vert", "src/shaders/ssao.frag");
+    GLuint compositeProg = createProgram("src/shaders/fullscreen.vert", "src/shaders/composite.frag");
+
+    // Post-processing settings (global for ImGui access)
+    struct PostProcessSettings {
+        bool enableBloom = true;
+        bool enableSSAO = true;
+        bool enableFXAA = true;
+        float bloomThreshold = 0.8f;
+        float bloomIntensity = 0.3f;
+        float ssaoRadius = 0.5f;
+    } g_postProcess;
+
+    // G-Buffer FBO (color + normals + depth)
+    GLuint gBufferFBO, gColorTex, gNormalTex, gDepthTex;
+    glGenFramebuffers(1, &gBufferFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, gBufferFBO);
+
+    glGenTextures(1, &gColorTex);
+    glBindTexture(GL_TEXTURE_2D, gColorTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, windowWidth, windowHeight, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gColorTex, 0);
+
+    glGenTextures(1, &gNormalTex);
+    glBindTexture(GL_TEXTURE_2D, gNormalTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, windowWidth, windowHeight, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormalTex, 0);
+
+    glGenTextures(1, &gDepthTex);
+    glBindTexture(GL_TEXTURE_2D, gDepthTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, windowWidth, windowHeight, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gDepthTex, 0);
+
+    GLenum gBufferAttachments[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    glDrawBuffers(2, gBufferAttachments);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cerr << "G-Buffer FBO incomplete!" << std::endl;
+
+    // Bloom FBOs (ping-pong for blur)
+    GLuint bloomFBO[2], bloomTex[2];
+    glGenFramebuffers(2, bloomFBO);
+    glGenTextures(2, bloomTex);
+    for (int i = 0; i < 2; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, bloomTex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, windowWidth / 2, windowHeight / 2, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, bloomTex[i], 0);
     }
+
+    // SSAO FBO
+    GLuint ssaoFBO, ssaoTex;
+    glGenFramebuffers(1, &ssaoFBO);
+    glGenTextures(1, &ssaoTex);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
+    glBindTexture(GL_TEXTURE_2D, ssaoTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, windowWidth, windowHeight, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssaoTex, 0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // Empty VAO for fullscreen triangle
+    GLuint fullscreenVAO;
+    glGenVertexArrays(1, &fullscreenVAO);
     
     // 3D plane mesh
     std::vector<float> vertices;
@@ -336,14 +425,15 @@ int main() {
         // Poll for and process events
         glfwPollEvents();
 
-        // Clear the screen
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
         // Compute view matrix from camera state
         glm::vec3 camPos = g_camera.getPosition();
         glm::mat4 view = glm::lookAt(camPos, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
-        // Render
+        // ============ PASS 1: Render scene to G-Buffer ============
+        glBindFramebuffer(GL_FRAMEBUFFER, gBufferFBO);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+
         glUseProgram(program);
         glUniformMatrix4fv(glGetUniformLocation(program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniformMatrix4fv(glGetUniformLocation(program, "view"), 1, GL_FALSE, glm::value_ptr(view));
@@ -356,6 +446,76 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, displacementTex);
         glUniform1i(glGetUniformLocation(program, "displacementTex"), 0);
         glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
+
+        glDisable(GL_DEPTH_TEST);
+        glBindVertexArray(fullscreenVAO);
+
+        // ============ PASS 2: Bright extract for bloom ============
+        if (g_postProcess.enableBloom) {
+            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
+            glViewport(0, 0, windowWidth / 2, windowHeight / 2);
+            glUseProgram(brightExtractProg);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, gColorTex);
+            glUniform1i(glGetUniformLocation(brightExtractProg, "sceneTex"), 0);
+            glUniform1f(glGetUniformLocation(brightExtractProg, "threshold"), g_postProcess.bloomThreshold);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            // ============ PASS 3: Gaussian blur (ping-pong) ============
+            glUseProgram(blurProg);
+            for (int i = 0; i < 4; i++) {  // 2 iterations (H+V each)
+                bool horizontal = (i % 2 == 0);
+                glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[horizontal ? 1 : 0]);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, bloomTex[horizontal ? 0 : 1]);
+                glUniform1i(glGetUniformLocation(blurProg, "inputTex"), 0);
+                glUniform2f(glGetUniformLocation(blurProg, "direction"),
+                    horizontal ? 1.0f : 0.0f, horizontal ? 0.0f : 1.0f);
+                glUniform1f(glGetUniformLocation(blurProg, "texelSize"),
+                    horizontal ? 2.0f / windowWidth : 2.0f / windowHeight);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
+        }
+
+        // ============ PASS 4: SSAO ============
+        if (g_postProcess.enableSSAO) {
+            glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
+            glViewport(0, 0, windowWidth, windowHeight);
+            glUseProgram(ssaoProg);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, gDepthTex);
+            glUniform1i(glGetUniformLocation(ssaoProg, "depthTex"), 0);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, gNormalTex);
+            glUniform1i(glGetUniformLocation(ssaoProg, "normalTex"), 1);
+            glUniformMatrix4fv(glGetUniformLocation(ssaoProg, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+            glUniform1f(glGetUniformLocation(ssaoProg, "radius"), g_postProcess.ssaoRadius);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+
+        // ============ PASS 5: Composite to screen ============
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, windowWidth, windowHeight);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glUseProgram(compositeProg);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, gColorTex);
+        glUniform1i(glGetUniformLocation(compositeProg, "sceneTex"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
+        glUniform1i(glGetUniformLocation(compositeProg, "bloomTex"), 1);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, ssaoTex);
+        glUniform1i(glGetUniformLocation(compositeProg, "aoTex"), 2);
+        glUniform1f(glGetUniformLocation(compositeProg, "bloomIntensity"), g_postProcess.bloomIntensity);
+        glUniform1i(glGetUniformLocation(compositeProg, "enableBloom"), g_postProcess.enableBloom);
+        glUniform1i(glGetUniformLocation(compositeProg, "enableSSAO"), g_postProcess.enableSSAO);
+        glUniform1i(glGetUniformLocation(compositeProg, "enableFXAA"), g_postProcess.enableFXAA);
+        glUniform2f(glGetUniformLocation(compositeProg, "texelSize"), 1.0f / windowWidth, 1.0f / windowHeight);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindVertexArray(0);
 
         // ImGui overlay
         ImGui_ImplOpenGL3_NewFrame();
@@ -377,6 +537,21 @@ int main() {
         if (ImGui::Button("Clear Simulation (C)")) {
             g_clearSim = true;
         }
+
+        // Post-processing controls
+        ImGui::Separator();
+        ImGui::Text("Post-Processing");
+        ImGui::Checkbox("Bloom", &g_postProcess.enableBloom);
+        if (g_postProcess.enableBloom) {
+            ImGui::SliderFloat("Bloom Threshold", &g_postProcess.bloomThreshold, 0.1f, 2.0f);
+            ImGui::SliderFloat("Bloom Intensity", &g_postProcess.bloomIntensity, 0.0f, 1.0f);
+        }
+        ImGui::Checkbox("SSAO", &g_postProcess.enableSSAO);
+        if (g_postProcess.enableSSAO) {
+            ImGui::SliderFloat("SSAO Radius", &g_postProcess.ssaoRadius, 0.1f, 2.0f);
+        }
+        ImGui::Checkbox("FXAA", &g_postProcess.enableFXAA);
+
         ImGui::Separator();
         ImGui::TextDisabled("Up/Down: Freq | Left/Right: Amp");
         ImGui::TextDisabled("W/S: Speed | R: Reset | C: Clear");

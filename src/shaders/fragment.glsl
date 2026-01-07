@@ -2,7 +2,10 @@
 in vec2 uv;
 in vec3 worldPos;
 in vec3 normal;
-out vec4 fragColor;
+in vec3 viewNormal;
+
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out vec4 fragNormal;
 
 uniform sampler2D displacementTex;
 uniform vec3 camPos;
@@ -39,4 +42,7 @@ void main() {
     vec3 color = baseColor * (ambient + diff * 0.6) + vec3(1.0) * spec * 0.4;
 
     fragColor = vec4(color, 1.0);
+
+    // Output view-space normal for SSAO (encoded to 0-1 range)
+    fragNormal = vec4(normalize(viewNormal) * 0.5 + 0.5, 1.0);
 }

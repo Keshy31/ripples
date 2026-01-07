@@ -3,6 +3,7 @@ layout (location = 0) in vec3 in_pos;
 out vec2 uv;
 out vec3 worldPos;
 out vec3 normal;
+out vec3 viewNormal;
 
 uniform sampler2D displacementTex;
 uniform mat4 projection;
@@ -29,4 +30,8 @@ void main() {
     float normalStrength = dispScale * 50.0;
     vec3 N = normalize(vec3((h_L - h_R) * normalStrength, 1.0, (h_D - h_U) * normalStrength));
     normal = normalize(mat3(transpose(inverse(model))) * N);
+
+    // View-space normal for SSAO
+    mat3 normalMatrix = mat3(transpose(inverse(view * model)));
+    viewNormal = normalMatrix * N;
 }

@@ -240,7 +240,62 @@ Advanced Effects
 
     Screen Space Ambient Occlusion (SSAO): With real 3D geometry from the displaced mesh, SSAO is essential. We will add an SSAO post-processing pass to create contact shadows in the troughs of waves and at the base of particle piles, dramatically increasing realism.
 
-(Word count so far: ~1400)
+Implemented Post-Processing Pipeline
+-------------------------------------
+
+The following multi-pass rendering pipeline has been implemented:
+
+**Render Passes:**
+```
+Scene Render → G-Buffer FBO (color + normals + depth)
+     ↓
+Bright Extract → Bloom FBO (half resolution)
+     ↓
+Gaussian Blur (4 iterations, ping-pong) → Blurred Bloom
+     ↓
+SSAO (from depth/normals) → AO texture
+     ↓
+Composite (scene + bloom × AO) + Tone Mapping + Gamma → Screen
+```
+
+**G-Buffer Setup:**
+- Color attachment: GL_RGBA16F for HDR scene rendering
+- Normal attachment: GL_RGBA16F for view-space normals (SSAO input)
+- Depth attachment: GL_DEPTH_COMPONENT24
+
+**Bloom Implementation:**
+- Bright extraction shader thresholds pixels by luminance (configurable threshold)
+- 9-tap separable Gaussian blur with weights [0.227, 0.195, 0.122, 0.054, 0.016]
+- 4 blur iterations using ping-pong FBOs at half resolution
+- Additive blending with configurable intensity
+
+**SSAO Implementation:**
+- 16-sample hemisphere kernel with hash-based randomization
+- TBN matrix construction from view-space normals
+- Range-checked depth comparison with configurable radius and bias
+- Single-pass blur integrated into composite
+
+**Composite Shader:**
+- Combines scene color, bloom, and ambient occlusion
+- FXAA edge detection and smoothing (8-tap)
+- Reinhard tone mapping: `color / (color + 1.0)`
+- Gamma correction: `pow(color, 1.0/2.2)`
+
+**Shader Files:**
+| File | Purpose |
+|------|---------|
+| `fullscreen.vert` | Fullscreen triangle (3 verts, no VAO) |
+| `bright_extract.frag` | Luminance threshold for bloom |
+| `blur.frag` | Separable Gaussian blur |
+| `ssao.frag` | Screen-space ambient occlusion |
+| `composite.frag` | Final compositing + FXAA + tone mapping |
+
+**ImGui Controls:**
+- Toggle switches for Bloom, SSAO, and FXAA
+- Bloom threshold and intensity sliders
+- SSAO radius slider
+
+(Word count so far: ~1700)
 
 Integration and Fidelity-Focused Optimization
 
