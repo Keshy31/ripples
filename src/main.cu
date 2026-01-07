@@ -14,6 +14,58 @@
 // Forward declaration of CUDA kernel
 extern "C" __global__ void fused_update_kernel(float* prev_u, float* u, float* next_u, float c, float dt, float dx, float damping, float freq, float amp, float t, int source_x, int source_y, int size);
 
+// Simulation parameters (global for key callback access)
+struct SimParams {
+    float freq = 10.0f;
+    float amp = 5.0f;
+    float c = 0.5f;
+    // Defaults for reset
+    static constexpr float DEFAULT_FREQ = 10.0f;
+    static constexpr float DEFAULT_AMP = 5.0f;
+    static constexpr float DEFAULT_C = 0.5f;
+} g_params;
+
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+        switch (key) {
+            case GLFW_KEY_UP:
+                g_params.freq += 1.0f;
+                std::cout << "Frequency: " << g_params.freq << " Hz" << std::endl;
+                break;
+            case GLFW_KEY_DOWN:
+                g_params.freq = std::max(1.0f, g_params.freq - 1.0f);
+                std::cout << "Frequency: " << g_params.freq << " Hz" << std::endl;
+                break;
+            case GLFW_KEY_RIGHT:
+                g_params.amp += 0.5f;
+                std::cout << "Amplitude: " << g_params.amp << std::endl;
+                break;
+            case GLFW_KEY_LEFT:
+                g_params.amp = std::max(0.5f, g_params.amp - 0.5f);
+                std::cout << "Amplitude: " << g_params.amp << std::endl;
+                break;
+            case GLFW_KEY_W:
+                g_params.c += 0.1f;
+                std::cout << "Wave speed: " << g_params.c << std::endl;
+                break;
+            case GLFW_KEY_S:
+                g_params.c = std::max(0.1f, g_params.c - 0.1f);
+                std::cout << "Wave speed: " << g_params.c << std::endl;
+                break;
+            case GLFW_KEY_R:
+                g_params.freq = SimParams::DEFAULT_FREQ;
+                g_params.amp = SimParams::DEFAULT_AMP;
+                g_params.c = SimParams::DEFAULT_C;
+                std::cout << "Reset to defaults: freq=" << g_params.freq
+                          << " amp=" << g_params.amp << " c=" << g_params.c << std::endl;
+                break;
+            case GLFW_KEY_ESCAPE:
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+                break;
+        }
+    }
+}
+
 int main() {
     // Initialize GLFW
     if (!glfwInit()) {
@@ -39,6 +91,9 @@ int main() {
     // Make the window's context current
     glfwMakeContextCurrent(window);
 
+    // Register key callback
+    glfwSetKeyCallback(window, key_callback);
+
     // Initialize GLAD
     if (!gladLoadGL(glfwGetProcAddress)) {
         std::cerr << "Failed to initialize GLAD" << std::endl;
@@ -53,12 +108,16 @@ int main() {
     // Simulation constants
     const size_t grid_size = 2048;
     const float dx = 1.0f / static_cast<float>(grid_size - 1);
-    const float c = 0.5f;  // Wave speed (increased for faster propagation)
-    const float dt = dx / (c * 1.5f);
     const float damping = 0.01f;
     float t = 0.0f;
-    float freq = 10.0f; // Example frequency
-    float amp = 5.0f;   // Wave amplitude (increased for visibility)
+
+    // Print controls
+    std::cout << "\nControls:" << std::endl;
+    std::cout << "  Up/Down arrows: Frequency +/- 1 Hz" << std::endl;
+    std::cout << "  Left/Right arrows: Amplitude +/- 0.5" << std::endl;
+    std::cout << "  W/S: Wave speed +/- 0.1" << std::endl;
+    std::cout << "  R: Reset to defaults" << std::endl;
+    std::cout << "  ESC: Quit\n" << std::endl;
     
     // Device arrays
     float* device_prev_u = nullptr;
@@ -163,10 +222,11 @@ int main() {
 
     // Loop until the user closes the window
     while (!glfwWindowShouldClose(window)) {
-        // Simulate step
+        // Simulate step (dt computed from current wave speed for CFL stability)
+        float dt = dx / (g_params.c * 1.5f);
         dim3 block_dim(16, 16, 1);
         dim3 grid_dim((grid_size + 15) / 16, (grid_size + 15) / 16, 1);
-        fused_update_kernel<<<grid_dim, block_dim>>>(device_prev_u, device_u, device_next_u, c, dt, dx, damping, freq, amp, t, grid_size / 2, grid_size / 2, grid_size);
+        fused_update_kernel<<<grid_dim, block_dim>>>(device_prev_u, device_u, device_next_u, g_params.c, dt, dx, damping, g_params.freq, g_params.amp, t, grid_size / 2, grid_size / 2, grid_size);
         cudaDeviceSynchronize();
         t += dt;
     
