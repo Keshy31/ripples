@@ -23,7 +23,7 @@ cmake --build build
 Dependencies are fetched automatically via CMake FetchContent:
 - GLFW 3.4 - Window/input management
 - GLM 1.0.1 - Math library
-- GLAD - OpenGL loader (bundled with GLFW)
+- GLAD - OpenGL 4.6 Core loader (generated in `external/glad/`)
 - CUDA Toolkit - Must be installed on system
 
 ## Architecture
@@ -32,11 +32,11 @@ Dependencies are fetched automatically via CMake FetchContent:
 
 1. **CUDA Kernel** (`src/kernels.cu`): Solves 2D wave equation using Verlet integration with 5-point Laplacian stencil. Triple-buffered (prev_u, u, next_u) for temporal stability.
 
-2. **CUDA-GL Interop** (`src/main.cpp`): Zero-copy transfer from CUDA simulation buffer to OpenGL texture via `cudaGraphicsGLRegisterImage`.
+2. **CUDA-GL Interop** (`src/main.cu`): Zero-copy transfer from CUDA simulation buffer to OpenGL texture via `cudaGraphicsGLRegisterImage`.
 
 3. **OpenGL Rendering** (`src/shaders/`): Displacement-mapped 3D mesh (256x256 segments) with Phong lighting.
 
-### Key Parameters (in main.cpp)
+### Key Parameters (in main.cu)
 
 - `grid_size = 2048`: Simulation resolution
 - `c = 0.1`: Wave speed
