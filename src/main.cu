@@ -10,6 +10,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 
 // Forward declaration of CUDA kernel
 extern "C" __global__ void fused_update_kernel(float* prev_u, float* u, float* next_u, float c, float dt, float dx, float damping, float freq, float amp, float t, int source_x, int source_y, int size);
@@ -24,6 +27,9 @@ struct SimParams {
     static constexpr float DEFAULT_AMP = 5.0f;
     static constexpr float DEFAULT_C = 0.5f;
 } g_params;
+
+// Flag to clear simulation (checked in main loop)
+bool g_clearSim = false;
 
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
@@ -58,6 +64,10 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
                 g_params.c = SimParams::DEFAULT_C;
                 std::cout << "Reset to defaults: freq=" << g_params.freq
                           << " amp=" << g_params.amp << " c=" << g_params.c << std::endl;
+                break;
+            case GLFW_KEY_C:
+                g_clearSim = true;
+                std::cout << "Clearing simulation..." << std::endl;
                 break;
             case GLFW_KEY_ESCAPE:
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -100,6 +110,15 @@ int main() {
         return -1;
     }
 
+    // Initialize ImGui
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 450");
+
     // CUDA setup
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
@@ -117,6 +136,7 @@ int main() {
     std::cout << "  Left/Right arrows: Amplitude +/- 0.5" << std::endl;
     std::cout << "  W/S: Wave speed +/- 0.1" << std::endl;
     std::cout << "  R: Reset to defaults" << std::endl;
+    std::cout << "  C: Clear simulation" << std::endl;
     std::cout << "  ESC: Quit\n" << std::endl;
     
     // Device arrays
@@ -235,7 +255,16 @@ int main() {
         device_prev_u = device_u;
         device_u = device_next_u;
         device_next_u = temp;
-    
+
+        // Clear simulation if requested
+        if (g_clearSim) {
+            cudaMemset(device_prev_u, 0, grid_size * grid_size * sizeof(float));
+            cudaMemset(device_u, 0, grid_size * grid_size * sizeof(float));
+            cudaMemset(device_next_u, 0, grid_size * grid_size * sizeof(float));
+            t = 0.0f;
+            g_clearSim = false;
+        }
+
         // Update texture with CUDA
         cudaGraphicsMapResources(1, &cudaResource);
         cudaArray_t array;
@@ -261,12 +290,44 @@ int main() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, displacementTex);
         glUniform1i(glGetUniformLocation(program, "displacementTex"), 0);
-        // Set other uniforms...
         glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
-    
+
+        // ImGui overlay
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        // Transparent overlay window in top-left corner
+        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.5f);
+        ImGui::Begin("Parameters", nullptr,
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
+        ImGui::Text("FPS: %.1f", io.Framerate);
+        ImGui::Separator();
+        ImGui::Text("Frequency: %.1f Hz", g_params.freq);
+        ImGui::Text("Amplitude: %.1f", g_params.amp);
+        ImGui::Text("Wave Speed: %.2f", g_params.c);
+        ImGui::Separator();
+        if (ImGui::Button("Clear Simulation (C)")) {
+            g_clearSim = true;
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Up/Down: Freq | Left/Right: Amp");
+        ImGui::TextDisabled("W/S: Speed | R: Reset | C: Clear");
+        ImGui::End();
+
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
         // Swap front and back buffers
         glfwSwapBuffers(window);
     }
+
+    // Cleanup ImGui
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 
     // Cleanup
     cudaFree(device_prev_u);
