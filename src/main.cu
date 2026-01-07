@@ -31,6 +31,66 @@ struct SimParams {
 // Flag to clear simulation (checked in main loop)
 bool g_clearSim = false;
 
+// Camera state (spherical coordinates)
+struct Camera {
+    float yaw = 0.0f;           // Horizontal angle (radians)
+    float pitch = 1.5f;         // Vertical angle (radians), ~86 degrees = almost top-down
+    float distance = 5.0f;      // Distance from origin
+    float lastX = 0.0f;
+    float lastY = 0.0f;
+    bool dragging = false;
+
+    glm::vec3 getPosition() const {
+        float x = distance * cos(pitch) * sin(yaw);
+        float y = distance * sin(pitch);
+        float z = distance * cos(pitch) * cos(yaw);
+        return glm::vec3(x, y, z);
+    }
+} g_camera;
+
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    // Don't capture mouse if ImGui wants it
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantCaptureMouse) return;
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (action == GLFW_PRESS) {
+            g_camera.dragging = true;
+            double xpos, ypos;
+            glfwGetCursorPos(window, &xpos, &ypos);
+            g_camera.lastX = static_cast<float>(xpos);
+            g_camera.lastY = static_cast<float>(ypos);
+        } else if (action == GLFW_RELEASE) {
+            g_camera.dragging = false;
+        }
+    }
+}
+
+void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (!g_camera.dragging) return;
+
+    float dx = static_cast<float>(xpos) - g_camera.lastX;
+    float dy = static_cast<float>(ypos) - g_camera.lastY;
+    g_camera.lastX = static_cast<float>(xpos);
+    g_camera.lastY = static_cast<float>(ypos);
+
+    const float sensitivity = 0.005f;
+    g_camera.yaw += dx * sensitivity;
+    g_camera.pitch += dy * sensitivity;
+
+    // Clamp pitch to avoid flipping
+    g_camera.pitch = std::max(0.1f, std::min(1.56f, g_camera.pitch)); // ~5 to ~89 degrees
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    // Don't capture scroll if ImGui wants it
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantCaptureMouse) return;
+
+    g_camera.distance -= static_cast<float>(yoffset) * 0.5f;
+    g_camera.distance = std::max(1.0f, std::min(20.0f, g_camera.distance));
+}
+
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
         switch (key) {
@@ -101,8 +161,11 @@ int main() {
     // Make the window's context current
     glfwMakeContextCurrent(window);
 
-    // Register key callback
+    // Register input callbacks
     glfwSetKeyCallback(window, key_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetCursorPosCallback(window, cursor_pos_callback);
+    glfwSetScrollCallback(window, scroll_callback);
 
     // Initialize GLAD
     if (!gladLoadGL(glfwGetProcAddress)) {
@@ -227,10 +290,8 @@ int main() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     
-    // Matrices
+    // Matrices (view computed per frame from camera state)
     glm::mat4 projection = glm::perspective(glm::radians(60.0f), (float)windowWidth / (float)windowHeight, 0.1f, 100.0f);
-    glm::vec3 camPos(0.0f, 5.0f, 0.001f);  // Top-down view (slight z offset to avoid gimbal lock)
-    glm::mat4 view = glm::lookAt(camPos, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f));
     glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3(4.0f, 1.0f, 4.0f));  // Scale mesh 4x to fill view
     glm::vec3 lightPos(2.0f, 5.0f, 2.0f);  // Offset light for better shading
     
@@ -277,6 +338,10 @@ int main() {
 
         // Clear the screen
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Compute view matrix from camera state
+        glm::vec3 camPos = g_camera.getPosition();
+        glm::mat4 view = glm::lookAt(camPos, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
         // Render
         glUseProgram(program);
