@@ -39,10 +39,11 @@ Dependencies are fetched automatically via CMake FetchContent:
 ### Key Parameters (in main.cu)
 
 - `grid_size = 2048`: Simulation resolution
-- `c = 0.1`: Wave speed
+- `c = 0.5`: Wave speed
 - `dt = dx / (c * 1.5)`: Time step (CFL-stable)
 - `damping = 0.01`: Damping coefficient
-- `freq = 10.0`, `amp = 0.1`: Source oscillation
+- `freq = 10.0`, `amp = 5.0`: Source oscillation
+- `windowWidth/Height = 1920x1080`: Window size
 
 ### Shader Paths
 

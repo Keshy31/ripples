@@ -27,7 +27,9 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create a windowed mode window and its OpenGL context
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Ripples", NULL, NULL);
+    const int windowWidth = 1920;
+    const int windowHeight = 1080;
+    GLFWwindow* window = glfwCreateWindow(windowWidth, windowHeight, "Ripples", NULL, NULL);
     if (!window) {
         std::cerr << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -51,12 +53,12 @@ int main() {
     // Simulation constants
     const size_t grid_size = 2048;
     const float dx = 1.0f / static_cast<float>(grid_size - 1);
-    const float c = 0.1f;
+    const float c = 0.5f;  // Wave speed (increased for faster propagation)
     const float dt = dx / (c * 1.5f);
     const float damping = 0.01f;
     float t = 0.0f;
     float freq = 10.0f; // Example frequency
-    float amp = 0.1f;
+    float amp = 5.0f;   // Wave amplitude (increased for visibility)
     
     // Device arrays
     float* device_prev_u = nullptr;
@@ -147,14 +149,14 @@ int main() {
     glEnableVertexAttribArray(0);
     
     // Matrices
-    glm::mat4 projection = glm::perspective(glm::radians(45.0f), 800.0f / 600.0f, 0.1f, 100.0f);
-    glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 2.0f, 3.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    glm::mat4 model = glm::mat4(1.0f);
-    glm::vec3 lightPos(0.0f, 5.0f, 0.0f);
-    glm::vec3 camPos(0.0f, 2.0f, 3.0f);
+    glm::mat4 projection = glm::perspective(glm::radians(60.0f), (float)windowWidth / (float)windowHeight, 0.1f, 100.0f);
+    glm::vec3 camPos(0.0f, 5.0f, 0.001f);  // Top-down view (slight z offset to avoid gimbal lock)
+    glm::mat4 view = glm::lookAt(camPos, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f));
+    glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3(4.0f, 1.0f, 4.0f));  // Scale mesh 4x to fill view
+    glm::vec3 lightPos(2.0f, 5.0f, 2.0f);  // Offset light for better shading
     
     // Set the clear color
-    glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+    glClearColor(0.02f, 0.02f, 0.05f, 1.0f);  // Dark background
 
     // After glad init
     glEnable(GL_DEPTH_TEST);
