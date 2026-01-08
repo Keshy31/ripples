@@ -46,7 +46,12 @@ target_link_libraries(imgui PRIVATE glfw)
 add_library(glad STATIC external/glad/src/gl.c)
 target_include_directories(glad PUBLIC external/glad/include)
 
-add_executable(ripples src/main.cu src/kernels.cu)
+add_executable(ripples src/main.cu src/kernels.cu src/audio.cpp)
 
 target_link_libraries(ripples PRIVATE glfw glad imgui)
 target_link_libraries(ripples PRIVATE glm::glm)
+
+# Windows audio libraries for WASAPI loopback
+if(WIN32)
+    target_link_libraries(ripples PRIVATE ole32 oleaut32 uuid)
+endif()

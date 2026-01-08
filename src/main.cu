@@ -13,15 +13,59 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include "audio.h"
+
+// Maximum sources (must match kernels.cu)
+#define MAX_SOURCES 8
+
+// Simulation modes (must match kernels.cu)
+enum SimMode {
+    SIM_WAVE_EQUATION = 0,  // Standard 2D wave equation
+    SIM_FARADAY_WAVES = 1,  // Faraday waves with surface tension
+    SIM_CHLADNI_MODES = 2   // Chladni plate modes (Bessel functions)
+};
+
+// Source structure (must match kernels.cu)
+struct Source {
+    int x, y;           // Grid position
+    float freq;         // Oscillation frequency (Hz)
+    float amp;          // Amplitude
+    float phase;        // Phase offset (radians)
+    int active;         // 1 = active, 0 = inactive
+};
+
+// Faraday wave parameters (must match kernels.cu)
+struct FaradayParams {
+    float surface_tension;  // σ (sigma) - surface tension coefficient
+    float gravity;          // g - gravitational acceleration
+    float density;          // ρ (rho) - fluid density
+    float drive_freq;       // Parametric driving frequency (Hz)
+    float drive_amp;        // Driving amplitude (modulation depth 0-1)
+};
+
+// Chladni mode parameters (must match kernels.cu)
+struct ChladniParams {
+    int mode_n;             // Azimuthal mode number (0-5)
+    int mode_s;             // Radial mode number (1-5)
+    float freq;             // Driving frequency
+    float amp;              // Amplitude
+    int circular_mask;      // 1 = apply circular boundary, 0 = square
+};
 
 // Forward declaration of CUDA kernel
-extern "C" __global__ void fused_update_kernel(float* prev_u, float* u, float* next_u, float c, float dt, float dx, float damping, float freq, float amp, float t, int source_x, int source_y, int size);
+extern "C" __global__ void fused_update_kernel(
+    float* prev_u, float* u, float* next_u,
+    float c, float dt, float dx, float damping,
+    Source* sources, int num_sources,
+    int sim_mode, FaradayParams faraday, ChladniParams chladni,
+    float t, int size
+);
 
 // Simulation parameters (global for key callback access)
 struct SimParams {
-    float freq = 10.0f;
-    float amp = 5.0f;
-    float c = 0.5f;
+    float freq = 10.0f;      // Default frequency for new sources
+    float amp = 5.0f;        // Default amplitude for new sources
+    float c = 0.5f;          // Wave speed
     // Defaults for reset
     static constexpr float DEFAULT_FREQ = 10.0f;
     static constexpr float DEFAULT_AMP = 5.0f;
@@ -30,6 +74,37 @@ struct SimParams {
 
 // Flag to clear simulation (checked in main loop)
 bool g_clearSim = false;
+
+// Source management
+std::vector<Source> g_sources;
+Source* g_device_sources = nullptr;
+int g_selectedSource = -1;  // -1 = none selected
+const size_t g_grid_size = 2048;  // Need this global for mouse position calculation
+
+// Simulation mode and Faraday parameters
+int g_simMode = SIM_WAVE_EQUATION;
+FaradayParams g_faraday = {
+    0.5f,     // surface_tension - controls pattern size
+    0.5f,     // gravity - wave speed
+    1.0f,     // density (unused)
+    10.0f,    // drive_freq - oscillation frequency (Hz)
+    3.0f      // drive_amp - forcing amplitude
+};
+
+// Chladni mode parameters
+ChladniParams g_chladni = {
+    2,        // mode_n (azimuthal) - try 0-5
+    1,        // mode_s (radial) - try 1-5
+    15.0f,    // driving frequency
+    5.0f,     // amplitude
+    1         // circular_mask enabled
+};
+
+// Audio-reactive mode
+AudioCapture* g_audioCapture = nullptr;
+bool g_audioReactive = false;
+float g_audioSensitivity = 1.0f;
+float g_audioFreqScale = 1.0f;  // Scale factor for mapping audio to wave frequency
 
 // Camera state (spherical coordinates)
 struct Camera {
@@ -48,6 +123,27 @@ struct Camera {
     }
 } g_camera;
 
+// Helper to add a new source at grid position
+void addSource(int gridX, int gridY) {
+    if (g_sources.size() >= MAX_SOURCES) {
+        std::cout << "Maximum sources reached (" << MAX_SOURCES << ")" << std::endl;
+        return;
+    }
+    // Clamp to valid grid range
+    gridX = std::max(1, std::min(gridX, (int)g_grid_size - 2));
+    gridY = std::max(1, std::min(gridY, (int)g_grid_size - 2));
+
+    Source src;
+    src.x = gridX;
+    src.y = gridY;
+    src.freq = g_params.freq;
+    src.amp = g_params.amp;
+    src.phase = 0.0f;
+    src.active = 1;
+    g_sources.push_back(src);
+    std::cout << "Added source " << g_sources.size() << " at (" << gridX << ", " << gridY << ")" << std::endl;
+}
+
 void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
     // Don't capture mouse if ImGui wants it
     ImGuiIO& io = ImGui::GetIO();
@@ -63,6 +159,25 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
         } else if (action == GLFW_RELEASE) {
             g_camera.dragging = false;
         }
+    }
+
+    // Right-click to place source
+    if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+        int winWidth, winHeight;
+        glfwGetWindowSize(window, &winWidth, &winHeight);
+
+        // Normalize to 0-1 range
+        float normX = static_cast<float>(xpos) / winWidth;
+        float normY = static_cast<float>(ypos) / winHeight;
+
+        // Map to grid coordinates
+        // With camera looking down from +Y, screen Y maps directly to grid Y (world Z)
+        int gridX = static_cast<int>(normX * g_grid_size);
+        int gridY = static_cast<int>(normY * g_grid_size);
+
+        addSource(gridX, gridY);
     }
 }
 
@@ -186,15 +301,25 @@ int main() {
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
     std::cout << "Using GPU: " << deviceProp.name << std::endl;
-    
+
     // Simulation constants
-    const size_t grid_size = 2048;
+    const size_t grid_size = g_grid_size;  // Use global constant
     const float dx = 1.0f / static_cast<float>(grid_size - 1);
     const float damping = 0.01f;
     float t = 0.0f;
 
+    // Allocate device memory for sources
+    cudaMalloc(&g_device_sources, MAX_SOURCES * sizeof(Source));
+
+    // Initialize with one source at center
+    addSource(grid_size / 2, grid_size / 2);
+
+    // Initialize audio capture
+    g_audioCapture = new AudioCapture();
+
     // Print controls
     std::cout << "\nControls:" << std::endl;
+    std::cout << "  Right-click: Place new source" << std::endl;
     std::cout << "  Up/Down arrows: Frequency +/- 1 Hz" << std::endl;
     std::cout << "  Left/Right arrows: Amplitude +/- 0.5" << std::endl;
     std::cout << "  W/S: Wave speed +/- 0.1" << std::endl;
@@ -392,11 +517,46 @@ int main() {
 
     // Loop until the user closes the window
     while (!glfwWindowShouldClose(window)) {
+        // Update sources from audio if enabled
+        if (g_audioReactive && g_audioCapture && g_audioCapture->isRunning()) {
+            float bandLevels[AudioCapture::NUM_BANDS];
+            g_audioCapture->getBandLevels(bandLevels, AudioCapture::NUM_BANDS);
+            float volume = g_audioCapture->getVolume();
+
+            // Map audio bands to source amplitudes
+            int numToUpdate = std::min((int)g_sources.size(), AudioCapture::NUM_BANDS);
+            for (int i = 0; i < numToUpdate; i++) {
+                // Modulate amplitude based on corresponding frequency band
+                float baseAmp = g_params.amp;
+                float audioBoost = bandLevels[i] * g_audioSensitivity * 20.0f;
+                g_sources[i].amp = baseAmp + audioBoost;
+
+                // Optionally modulate frequency slightly based on volume
+                float baseFreq = g_params.freq + i * 5.0f;  // Each source slightly higher freq
+                g_sources[i].freq = baseFreq * (1.0f + volume * 0.5f * g_audioFreqScale);
+            }
+        }
+
+        // Copy sources to device
+        int numSources = static_cast<int>(g_sources.size());
+        if (numSources > 0) {
+            cudaMemcpy(g_device_sources, g_sources.data(), numSources * sizeof(Source), cudaMemcpyHostToDevice);
+        }
+
         // Simulate step (dt computed from current wave speed for CFL stability)
-        float dt = dx / (g_params.c * 1.5f);
+        float wave_speed = (g_simMode == SIM_FARADAY_WAVES) ? g_faraday.gravity : g_params.c;
+        float dt = dx / (wave_speed * 1.5f);  // Standard CFL condition
+        dt = std::min(dt, 0.001f);  // Cap dt to avoid instability
+
         dim3 block_dim(16, 16, 1);
         dim3 grid_dim((grid_size + 15) / 16, (grid_size + 15) / 16, 1);
-        fused_update_kernel<<<grid_dim, block_dim>>>(device_prev_u, device_u, device_next_u, g_params.c, dt, dx, damping, g_params.freq, g_params.amp, t, grid_size / 2, grid_size / 2, grid_size);
+        fused_update_kernel<<<grid_dim, block_dim>>>(
+            device_prev_u, device_u, device_next_u,
+            g_params.c, dt, dx, damping,
+            g_device_sources, numSources,
+            g_simMode, g_faraday, g_chladni,
+            t, grid_size
+        );
         cudaDeviceSynchronize();
         t += dt;
     
@@ -530,9 +690,101 @@ int main() {
             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
         ImGui::Text("FPS: %.1f", io.Framerate);
         ImGui::Separator();
-        ImGui::Text("Frequency: %.1f Hz", g_params.freq);
-        ImGui::Text("Amplitude: %.1f", g_params.amp);
-        ImGui::Text("Wave Speed: %.2f", g_params.c);
+
+        // Simulation mode selector
+        ImGui::Text("Simulation Mode:");
+        ImGui::RadioButton("Wave Equation", &g_simMode, SIM_WAVE_EQUATION);
+        ImGui::SameLine();
+        ImGui::RadioButton("Chladni", &g_simMode, SIM_CHLADNI_MODES);
+
+        // Mode-specific parameters
+        if (g_simMode == SIM_CHLADNI_MODES) {
+            ImGui::SliderFloat("Drive Freq", &g_chladni.freq, 1.0f, 100.0f, "%.1f Hz");
+            ImGui::SliderFloat("Drive Amp", &g_chladni.amp, 0.5f, 20.0f, "%.1f");
+            bool circularMask = (g_chladni.circular_mask != 0);
+            if (ImGui::Checkbox("Circular Boundary", &circularMask)) {
+                g_chladni.circular_mask = circularMask ? 1 : 0;
+            }
+            ImGui::TextDisabled("Adjust freq to find resonant modes");
+        } else {
+            ImGui::SliderFloat("Wave Speed", &g_params.c, 0.1f, 2.0f, "%.2f");
+        }
+
+        // Wave parameters (for non-Chladni modes)
+        if (g_simMode != SIM_CHLADNI_MODES) {
+            ImGui::Separator();
+            ImGui::Text("New Source Defaults:");
+            ImGui::SliderFloat("Frequency", &g_params.freq, 1.0f, 50.0f, "%.1f Hz");
+            ImGui::SliderFloat("Amplitude", &g_params.amp, 0.5f, 20.0f, "%.1f");
+        }
+
+        // Source management
+        ImGui::Separator();
+        ImGui::Text("Sources (%d/%d)", (int)g_sources.size(), MAX_SOURCES);
+
+        if (ImGui::Button("Add Center Source") && g_sources.size() < MAX_SOURCES) {
+            addSource(grid_size / 2, grid_size / 2);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear All Sources")) {
+            g_sources.clear();
+            std::cout << "Cleared all sources" << std::endl;
+        }
+
+        // Source list with individual controls
+        int sourceToRemove = -1;
+        for (int i = 0; i < (int)g_sources.size(); i++) {
+            ImGui::PushID(i);
+            bool active = (g_sources[i].active != 0);
+            if (ImGui::Checkbox("##active", &active)) {
+                g_sources[i].active = active ? 1 : 0;
+            }
+            ImGui::SameLine();
+            ImGui::Text("S%d", i + 1);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::SliderFloat("##freq", &g_sources[i].freq, 1.0f, 50.0f, "%.0f");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::SliderFloat("##amp", &g_sources[i].amp, 0.5f, 20.0f, "%.1f");
+            ImGui::SameLine();
+            if (ImGui::Button("X")) {
+                sourceToRemove = i;
+            }
+            ImGui::PopID();
+        }
+        if (sourceToRemove >= 0) {
+            g_sources.erase(g_sources.begin() + sourceToRemove);
+        }
+
+        // Audio-reactive controls
+        ImGui::Separator();
+        ImGui::Text("Audio Reactive");
+        bool wasReactive = g_audioReactive;
+        ImGui::Checkbox("Enable Audio", &g_audioReactive);
+
+        // Start/stop audio capture when toggled
+        if (g_audioReactive != wasReactive) {
+            if (g_audioReactive) {
+                if (g_audioCapture) g_audioCapture->start();
+            } else {
+                if (g_audioCapture) g_audioCapture->stop();
+            }
+        }
+
+        if (g_audioReactive) {
+            ImGui::SliderFloat("Sensitivity", &g_audioSensitivity, 0.1f, 5.0f, "%.1f");
+            ImGui::SliderFloat("Freq Scale", &g_audioFreqScale, 0.0f, 2.0f, "%.1f");
+
+            // Show audio levels visualizer
+            if (g_audioCapture && g_audioCapture->isRunning()) {
+                float bands[AudioCapture::NUM_BANDS];
+                g_audioCapture->getBandLevels(bands, AudioCapture::NUM_BANDS);
+                ImGui::PlotHistogram("##bands", bands, AudioCapture::NUM_BANDS, 0, nullptr, 0.0f, 1.0f, ImVec2(150, 30));
+                ImGui::Text("Vol: %.2f  Dom: %.0f Hz", g_audioCapture->getVolume(), g_audioCapture->getDominantFrequency());
+            }
+        }
+
         ImGui::Separator();
         if (ImGui::Button("Clear Simulation (C)")) {
             g_clearSim = true;
@@ -553,7 +805,7 @@ int main() {
         ImGui::Checkbox("FXAA", &g_postProcess.enableFXAA);
 
         ImGui::Separator();
-        ImGui::TextDisabled("Up/Down: Freq | Left/Right: Amp");
+        ImGui::TextDisabled("Right-click: Add source");
         ImGui::TextDisabled("W/S: Speed | R: Reset | C: Clear");
         ImGui::End();
 
@@ -569,10 +821,18 @@ int main() {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    // Cleanup audio
+    if (g_audioCapture) {
+        g_audioCapture->stop();
+        delete g_audioCapture;
+        g_audioCapture = nullptr;
+    }
+
     // Cleanup
     cudaFree(device_prev_u);
     cudaFree(device_u);
     cudaFree(device_next_u);
+    cudaFree(g_device_sources);
     glDeleteTextures(1, &displacementTex);
     cudaGraphicsUnregisterResource(cudaResource);
     glDeleteProgram(program);
